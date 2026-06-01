@@ -17,6 +17,7 @@ const state = {
   filter: "all",
   shuffle: true,
   syncMeta: null,
+  listCategory: null,
 };
 
 const elements = {
@@ -38,6 +39,18 @@ const elements = {
   queueStatus: document.querySelector("#queue-status"),
   currentStatusPill: document.querySelector("#current-status-pill"),
   statsGrid: document.querySelector("#stats-grid"),
+  wordListPanel: document.querySelector("#word-list-panel"),
+  wordListTitle: document.querySelector("#word-list-title"),
+  wordListNote: document.querySelector("#word-list-note"),
+  wordListItems: document.querySelector("#word-list-items"),
+  wordListClose: document.querySelector("#word-list-close"),
+};
+
+const categoryLabels = {
+  all: "All words",
+  new: "New words",
+  learned: "Learned words",
+  forgotten: "Forgotten words",
 };
 
 function utcNowIso() {
@@ -239,6 +252,17 @@ function getCardDirection(card) {
   return state.deckMode;
 }
 
+function getCardsForCategory(category) {
+  const cards = state.cards.filter((card) => {
+    if (category === "all") return true;
+    return card.status === category;
+  });
+
+  return [...cards].sort((left, right) =>
+    left.lithuanian.localeCompare(right.lithuanian, "lt", { sensitivity: "base" }),
+  );
+}
+
 function getPromptAndAnswer(card) {
   const direction = getCardDirection(card);
   if (direction === "ru-lt") {
@@ -287,11 +311,101 @@ function renderStats() {
   }
 
   elements.statsGrid.innerHTML = `
-    <div class="stat-card"><span>Total</span><strong>${counts.all}</strong></div>
-    <div class="stat-card"><span>New</span><strong>${counts.new}</strong></div>
-    <div class="stat-card"><span>Learned</span><strong>${counts.learned}</strong></div>
-    <div class="stat-card"><span>Forgotten</span><strong>${counts.forgotten}</strong></div>
+    <button class="stat-card ${state.listCategory === "all" ? "active" : ""}" data-category="all" type="button">
+      <span>Total</span><strong>${counts.all}</strong>
+    </button>
+    <button class="stat-card ${state.listCategory === "new" ? "active" : ""}" data-category="new" type="button">
+      <span>New</span><strong>${counts.new}</strong>
+    </button>
+    <button class="stat-card ${state.listCategory === "learned" ? "active" : ""}" data-category="learned" type="button">
+      <span>Learned</span><strong>${counts.learned}</strong>
+    </button>
+    <button class="stat-card ${state.listCategory === "forgotten" ? "active" : ""}" data-category="forgotten" type="button">
+      <span>Forgotten</span><strong>${counts.forgotten}</strong>
+    </button>
   `;
+
+  elements.statsGrid.querySelectorAll("[data-category]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.listCategory = button.dataset.category;
+      renderStats();
+      renderWordList();
+    });
+  });
+}
+
+function renderWordList() {
+  const category = state.listCategory;
+  if (!category) {
+    elements.wordListPanel.classList.add("hidden");
+    return;
+  }
+
+  const cards = getCardsForCategory(category);
+  elements.wordListPanel.classList.remove("hidden");
+  elements.wordListTitle.textContent = categoryLabels[category];
+
+  if (category === "new") {
+    elements.wordListNote.textContent = "These are waiting to be reviewed or assigned to another status.";
+  } else if (category === "all") {
+    elements.wordListNote.textContent = "Tap any reset button to move a word back into the New bucket on this device.";
+  } else {
+    elements.wordListNote.textContent = "Use Reset to New if you want to remove a word from this category.";
+  }
+
+  if (cards.length === 0) {
+    elements.wordListItems.innerHTML = `<p class="word-list-empty">No words in this category yet.</p>`;
+    return;
+  }
+
+  elements.wordListItems.innerHTML = cards
+    .map((card) => {
+      const resetButton =
+        category !== "new"
+          ? `<button class="mini-reset-button" data-reset-card="${card.id}" type="button">Reset to New</button>`
+          : "";
+
+      return `
+        <article class="word-row">
+          <div class="word-row-copy">
+            <p class="word-row-main">${card.lithuanian}</p>
+            <p class="word-row-sub">${card.russian}</p>
+          </div>
+          ${resetButton}
+        </article>
+      `;
+    })
+    .join("");
+
+  elements.wordListItems.querySelectorAll("[data-reset-card]").forEach((button) => {
+    button.addEventListener("click", () => {
+      resetCardToNew(button.dataset.resetCard);
+    });
+  });
+}
+
+function resetCardToNew(cardId) {
+  const stored = updateStoredCard(cardId, STATUS_NEW);
+  const sharedUpdate = {
+    status: STATUS_NEW,
+    times_seen: stored.times_seen,
+    success_count: stored.success_count,
+    failure_count: stored.failure_count,
+    last_reviewed_at: stored.last_reviewed_at,
+  };
+
+  state.cards = state.cards.map((item) => (item.id === cardId ? { ...item, ...sharedUpdate } : item));
+
+  if (state.filteredCards.length > 0) {
+    state.filteredCards = state.filteredCards.map((item) =>
+      item.id === cardId ? { ...item, ...sharedUpdate } : item,
+    );
+  }
+
+  buildPracticeDeck(state.cards);
+  renderStats();
+  renderWordList();
+  renderCard();
 }
 
 function renderCard() {
@@ -430,6 +544,12 @@ function bindEvents() {
       }
     });
   });
+
+  elements.wordListClose.addEventListener("click", () => {
+    state.listCategory = null;
+    renderStats();
+    renderWordList();
+  });
 }
 
 async function registerServiceWorker() {
@@ -451,6 +571,7 @@ async function initialize() {
     await fetchDeck();
   } catch (error) {
     elements.syncStatus.textContent = error.message;
+    renderWordList();
     renderCard();
   }
 }
