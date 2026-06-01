@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: lithuanian-words-trainer
+    runtime: python
+    plan: starter
+    rootDir: ./lithuanian_flashcards
+    buildCommand: "true"
+    startCommand: python server.py
+    healthCheckPath: /api/health
+    disk:
+      name: flashcards-data
+      mountPath: /opt/render/project/src/data
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: LITHUANIAN_FLASHCARDS_DATA_DIR
+        value: /opt/render/project/src/data
+      - key: LITHUANIAN_FLASHCARDS_SHEET_ID
+        value: 1Tx5wN5IWSMOLtg_60ihrkf-T6G1_darxaoIstj6on5M

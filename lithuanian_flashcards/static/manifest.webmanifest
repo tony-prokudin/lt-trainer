@@ -1,0 +1,9 @@
+{
+  "name": "Lithuanian Words Trainer",
+  "short_name": "LT Trainer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f5f8",
+  "theme_color": "#f3f5f8",
+  "description": "Flashcards synced from a Google Sheet for Lithuanian vocabulary practice."
+}
