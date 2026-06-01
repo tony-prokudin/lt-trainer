@@ -1,3 +1,13 @@
+const SHEET_ID = "1Tx5wN5IWSMOLtg_60ihrkf-T6G1_darxaoIstj6on5M";
+const SHEET_URL =
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json`;
+const STORAGE_KEY = "lt-trainer-progress-v1";
+const SETTINGS_KEY = "lt-trainer-settings-v1";
+const STATUS_NEW = "new";
+const STATUS_LEARNED = "learned";
+const STATUS_FORGOTTEN = "forgotten";
+const EXPECTED_HEADERS = ["lithuanian", "russian", "pronunciation", "examples"];
+
 const state = {
   cards: [],
   filteredCards: [],
@@ -30,6 +40,15 @@ const elements = {
   statsGrid: document.querySelector("#stats-grid"),
 };
 
+function utcNowIso() {
+  return new Date().toISOString();
+}
+
+function buildCardId(lithuanian, russian) {
+  return `${lithuanian.trim().toLowerCase()}::${russian.trim().toLowerCase()}`
+    .replace(/\s+/g, " ");
+}
+
 function shuffleList(list) {
   const clone = [...list];
   for (let index = clone.length - 1; index > 0; index -= 1) {
@@ -43,6 +62,174 @@ function formatTimestamp(value) {
   if (!value) return "never";
   const date = new Date(value);
   return date.toLocaleString();
+}
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    state.deckMode = saved.deckMode || state.deckMode;
+    state.filter = saved.filter || state.filter;
+    state.shuffle = typeof saved.shuffle === "boolean" ? saved.shuffle : state.shuffle;
+  } catch (error) {
+    console.warn("Could not load settings", error);
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem(
+    SETTINGS_KEY,
+    JSON.stringify({
+      deckMode: state.deckMode,
+      filter: state.filter,
+      shuffle: state.shuffle,
+    }),
+  );
+}
+
+function loadProgressStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    return {
+      cards: parsed.cards || {},
+      meta: parsed.meta || { created_at: utcNowIso() },
+    };
+  } catch (error) {
+    console.warn("Could not load progress store", error);
+    return { cards: {}, meta: { created_at: utcNowIso() } };
+  }
+}
+
+function saveProgressStore(progress) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+}
+
+function loadSheetData() {
+  return new Promise((resolve, reject) => {
+    const callbackName = `ltTrainerSheetCallback_${Date.now()}`;
+    const separator = SHEET_URL.includes("?") ? ";" : "?";
+    const src = `${SHEET_URL}${separator}tqx=out:json;responseHandler:${callbackName}`;
+    const script = document.createElement("script");
+
+    window[callbackName] = (payload) => {
+      cleanup();
+      resolve(payload);
+    };
+
+    function cleanup() {
+      delete window[callbackName];
+      script.remove();
+    }
+
+    script.src = src;
+    script.async = true;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("Could not load the Google Sheet. Check network access."));
+    };
+
+    document.head.appendChild(script);
+  });
+}
+
+function extractSheetRows(payload) {
+  const table = payload?.table;
+  const rows = table?.rows || [];
+
+  const parsedRows = rows
+    .map((row) => {
+      const cells = row.c || [];
+      const values = cells.slice(0, 4).map((cell) => String(cell?.v || "").trim());
+      while (values.length < 4) values.push("");
+      return {
+        lithuanian: values[0],
+        russian: values[1],
+        pronunciation: values[2],
+        examples: values[3],
+      };
+    })
+    .filter((row) => Object.values(row).some(Boolean));
+
+  const firstRowHeaders = EXPECTED_HEADERS.map((key) =>
+    String(parsedRows[0]?.[key] || "").trim().toLowerCase(),
+  );
+
+  const contentRows =
+    JSON.stringify(firstRowHeaders) === JSON.stringify(EXPECTED_HEADERS)
+      ? parsedRows.slice(1)
+      : parsedRows;
+
+  return contentRows
+    .filter((row) => row.lithuanian && row.russian)
+    .map((row) => ({
+      ...row,
+      id: buildCardId(row.lithuanian, row.russian),
+    }));
+}
+
+function mergeCardsWithProgress(cards) {
+  const progress = loadProgressStore();
+  const progressCards = progress.cards;
+  const now = utcNowIso();
+  let newCardsAdded = 0;
+
+  const mergedCards = cards.map((card) => {
+    let record = progressCards[card.id];
+    if (!record) {
+      record = {
+        status: STATUS_NEW,
+        created_at: now,
+        last_reviewed_at: null,
+        times_seen: 0,
+        success_count: 0,
+        failure_count: 0,
+      };
+      progressCards[card.id] = record;
+      newCardsAdded += 1;
+    }
+
+    return {
+      ...card,
+      status: record.status || STATUS_NEW,
+      created_at: record.created_at || now,
+      last_reviewed_at: record.last_reviewed_at || null,
+      times_seen: Number(record.times_seen || 0),
+      success_count: Number(record.success_count || 0),
+      failure_count: Number(record.failure_count || 0),
+    };
+  });
+
+  progress.meta.last_sync_at = now;
+  saveProgressStore(progress);
+
+  return {
+    cards: mergedCards,
+    synced_at: now,
+    new_cards_added: newCardsAdded,
+  };
+}
+
+function updateStoredCard(cardId, status) {
+  const progress = loadProgressStore();
+  const record = progress.cards[cardId];
+
+  if (!record) {
+    throw new Error("Could not find this card in local progress.");
+  }
+
+  record.status = status;
+  record.last_reviewed_at = utcNowIso();
+  record.times_seen = Number(record.times_seen || 0) + 1;
+
+  if (status === STATUS_LEARNED) {
+    record.success_count = Number(record.success_count || 0) + 1;
+  } else if (status === STATUS_FORGOTTEN) {
+    record.failure_count = Number(record.failure_count || 0) + 1;
+  }
+
+  progress.meta.last_review_at = record.last_reviewed_at;
+  saveProgressStore(progress);
+
+  return record;
 }
 
 function getCardDirection(card) {
@@ -133,7 +320,7 @@ function renderCard() {
   elements.examplesText.textContent = card.examples || "—";
   elements.cardDirection.textContent = cardData.directionLabel;
   elements.currentStatusPill.textContent = `Status: ${card.status}`;
-  elements.queueStatus.textContent = `Last reviewed: ${formatTimestamp(card.last_reviewed_at)}`;
+  elements.queueStatus.textContent = `Saved on this device. Last reviewed: ${formatTimestamp(card.last_reviewed_at)}`;
 }
 
 function moveNext() {
@@ -150,45 +337,38 @@ function moveNext() {
 async function fetchDeck() {
   elements.syncStatus.textContent = "Syncing sheet…";
 
-  const response = await fetch("/api/deck");
-  const payload = await response.json();
+  const rawSheetPayload = await loadSheetData();
+  const sheetCards = extractSheetRows(rawSheetPayload);
+  const merged = mergeCardsWithProgress(sheetCards);
 
-  if (!response.ok) {
-    throw new Error(payload.message || "Failed to load deck.");
-  }
-
-  state.cards = payload.cards;
-  state.syncMeta = payload;
+  state.cards = merged.cards;
+  state.syncMeta = merged;
 
   buildPracticeDeck(state.cards);
   renderStats();
   renderCard();
 
-  const newWords = payload.new_cards_added === 1 ? "1 new card added" : `${payload.new_cards_added} new cards added`;
-  elements.syncStatus.textContent = `Synced ${payload.cards.length} cards at ${formatTimestamp(payload.synced_at)}. ${newWords}.`;
+  const newWords =
+    merged.new_cards_added === 1
+      ? "1 new card added"
+      : `${merged.new_cards_added} new cards added`;
+  elements.syncStatus.textContent =
+    `Synced ${merged.cards.length} cards at ${formatTimestamp(merged.synced_at)}. ` +
+    `${newWords}. Progress is stored on this device.`;
 }
 
 async function submitReview(status) {
   const card = state.filteredCards[state.currentIndex];
   if (!card) return;
 
-  const response = await fetch("/api/review", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cardId: card.id, status }),
-  });
-
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.message || "Failed to update card.");
-  }
+  const stored = updateStoredCard(card.id, status);
 
   const sharedUpdate = {
     status,
-    times_seen: payload.record.times_seen,
-    success_count: payload.record.success_count,
-    failure_count: payload.record.failure_count,
-    last_reviewed_at: payload.record.last_reviewed_at,
+    times_seen: stored.times_seen,
+    success_count: stored.success_count,
+    failure_count: stored.failure_count,
+    last_reviewed_at: stored.last_reviewed_at,
   };
 
   state.cards = state.cards.map((item) => (item.id === card.id ? { ...item, ...sharedUpdate } : item));
@@ -199,20 +379,27 @@ async function submitReview(status) {
 }
 
 function bindEvents() {
+  elements.directionSelect.value = state.deckMode;
+  elements.statusFilter.value = state.filter;
+  elements.shuffleToggle.checked = state.shuffle;
+
   elements.directionSelect.addEventListener("change", () => {
     state.deckMode = elements.directionSelect.value;
+    saveSettings();
     buildPracticeDeck(state.cards);
     renderCard();
   });
 
   elements.statusFilter.addEventListener("change", () => {
     state.filter = elements.statusFilter.value;
+    saveSettings();
     buildPracticeDeck(state.cards);
     renderCard();
   });
 
   elements.shuffleToggle.addEventListener("change", () => {
     state.shuffle = elements.shuffleToggle.checked;
+    saveSettings();
     buildPracticeDeck(state.cards);
     renderCard();
   });
@@ -245,8 +432,21 @@ function bindEvents() {
   });
 }
 
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+
+  try {
+    await navigator.serviceWorker.register("./sw.js");
+  } catch (error) {
+    console.warn("Service worker registration failed", error);
+  }
+}
+
 async function initialize() {
+  loadSettings();
   bindEvents();
+  registerServiceWorker();
+
   try {
     await fetchDeck();
   } catch (error) {
