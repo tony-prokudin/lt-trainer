@@ -1,4 +1,4 @@
-const CACHE_NAME = "lt-trainer-static-v1";
+const CACHE_NAME = "lt-trainer-static-v2";
 
 function assetUrls() {
   return [
@@ -11,34 +11,36 @@ function assetUrls() {
 }
 
 self.addEventListener("install", (event) => {
+  self.skipWaiting();
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(assetUrls())));
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
-    ),
+    Promise.all([
+      self.clients.claim(),
+      caches.keys().then((keys) =>
+        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+      ),
+    ]),
   );
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
+  const requestUrl = new URL(event.request.url);
+  const isSameOrigin = requestUrl.origin === self.location.origin;
 
-      return fetch(event.request).then((response) => {
-        const requestUrl = new URL(event.request.url);
-        if (requestUrl.origin === self.location.origin) {
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (isSameOrigin) {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
         }
         return response;
-      });
-    }),
+      })
+      .catch(() => caches.match(event.request)),
   );
 });
